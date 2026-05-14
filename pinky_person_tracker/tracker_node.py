@@ -6,6 +6,7 @@ from cv_bridge import CvBridge
 import cv2
 import time
 import math
+import random
 from enum import Enum
 
 # Pinky 서비스 인터페이스 임포트
@@ -21,10 +22,12 @@ class PinkyTrackerNode(Node):
     def __init__(self):
         super().__init__('pinky_tracker_node')
         
+        # 1. 파라미터 선언: IDLE 상태의 회전 속도 (기본값: 기존 대비 약 15% 증가)
+        self.declare_parameter('idle_spin_speed', -0.1204)
+        
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.image_sub = self.create_subscription(Image, '/camera/image_raw', self.image_callback, 10)
         
-        # 서비스 클라이언트 생성
         self.emotion_client = self.create_client(Emotion, 'set_emotion')
         self.led_client = self.create_client(SetLed, 'set_led')
         
@@ -39,7 +42,6 @@ class PinkyTrackerNode(Node):
         self.search_start_time = 0.0
         self.last_detection_time = time.time()
         
-        # LED 점멸 제어용 변수
         self.led_blink_state = False
         self.last_blink_time = time.time()
         
@@ -50,7 +52,6 @@ class PinkyTrackerNode(Node):
 
     def request_emotion(self, emo_str):
         if not self.emotion_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('Emotion service not available.')
             return
         req = Emotion.Request()
         req.emotion = emo_str
@@ -58,7 +59,6 @@ class PinkyTrackerNode(Node):
 
     def request_led(self, command, r=0, g=0, b=0):
         if not self.led_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('LED service not available.')
             return
         req = SetLed.Request()
         req.command = command
@@ -100,19 +100,26 @@ class PinkyTrackerNode(Node):
         
         if self.current_state == State.IDLE:
             self.get_logger().info('State: IDLE')
-            self.request_emotion('bored')
-            self.request_led('fill', r=0, g=255, b=0)
+            # 2. 표정 랜덤 선택 및 핑크색 LED 점등 (점멸 안함)
+            selected_emo = random.choice(['bored', 'basic', 'interest'])
+            self.request_emotion(selected_emo)
+            self.request_led('fill', r=239, g=52, b=237) 
             
         elif self.current_state == State.TRACK:
             self.get_logger().info('State: TRACK')
-            self.request_emotion('happy')
-            # TRACK 진입 시 첫 점멸 시작
+            # 2. 표정 랜덤 선택 및 초록색 LED 점멸 시작
+            selected_emo = random.choice(['happy', 'fun'])
+            self.request_emotion(selected_emo)
             self.led_blink_state = True
-            self.request_led('fill', r=255, g=0, b=0)
+            self.last_blink_time = time.time()
+            self.request_led('fill', r=0, g=255, b=0)
             
         elif self.current_state == State.SEARCH:
             self.get_logger().info('State: SEARCH')
+            # 2. Sad 표정 및 푸른색 LED 점멸 시작
             self.request_emotion('sad')
+            self.led_blink_state = True
+            self.last_blink_time = time.time()
             self.request_led('fill', r=0, g=0, b=255)
             self.search_start_time = time.time()
 
@@ -124,19 +131,21 @@ class PinkyTrackerNode(Node):
             if self.person_detected:
                 self.enter_state(State.TRACK)
                 return
-            twist_msg.angular.z = -0.1047
+            # 3. 파라미터로 설정된 속도 적용
+            spin_speed = self.get_parameter('idle_spin_speed').get_parameter_value().double_value
+            twist_msg.angular.z = spin_speed
             
         elif self.current_state == State.TRACK:
             if not self.person_detected and (current_time - self.last_detection_time > 0.5):
                 self.enter_state(State.SEARCH)
                 return
                 
-            # 0.5초 간격으로 붉은색 LED 점멸 로직
+            # 2. 중간 속도(0.5초 간격) 초록색 LED 점멸 로직
             if current_time - self.last_blink_time > 0.5:
                 self.led_blink_state = not self.led_blink_state
                 self.last_blink_time = current_time
                 if self.led_blink_state:
-                    self.request_led('fill', r=255, g=0, b=0)
+                    self.request_led('fill', r=0, g=255, b=0)
                 else:
                     self.request_led('clear')
 
@@ -153,6 +162,15 @@ class PinkyTrackerNode(Node):
             if elapsed_time > 10.0:
                 self.enter_state(State.IDLE)
                 return
+                
+            # 2. 느린 속도(1.0초 간격) 푸른색 LED 점멸 로직
+            if current_time - self.last_blink_time > 1.0:
+                self.led_blink_state = not self.led_blink_state
+                self.last_blink_time = current_time
+                if self.led_blink_state:
+                    self.request_led('fill', r=0, g=0, b=255)
+                else:
+                    self.request_led('clear')
                 
             twist_msg.angular.z = 0.5 * math.sin(elapsed_time * 1.2) 
 
